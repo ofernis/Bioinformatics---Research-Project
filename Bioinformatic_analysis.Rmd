@@ -1,0 +1,981 @@
+---
+title: "Bioinformatic analysis"
+output: html_document
+date: "2023-03-16"
+Authors: "Ofer Nissim, Tom Smolin"
+IDs: "312367576, 313552739"
+---
+
+Abstract:
+
+The COVID-19 disease is caused by the SARS-CoV-2 virus and is responsible for one of the worst pandemics in modern history. HIV is a virus that destroys the immune system and makes the body vulnerable to infections and diseases. Previous studies show that HIV-infected individuals are at a higher risk of severe COVID-19 outcomes and mortality. However, the scientific community still lacks knowledge about how COVID-19 and HIV interact at the molecular level. Our goal was to investigate the blood transcriptome interaction (crosstalk) between COVID-19 and HIV, in order to provide an initial basis to potential treatments for HIV-infected COVID-19 patients. We performed gene expression analysis using “Deseq2” and “limma” to identify differentially expressed genes (DEG) in each of the two conditions. Then we intersected the results to obtain the common DEG. The intersection yielded 436 significant (adj. P-value < 0.05) genes in COVID-19 & HIV vs. healthy patients. Afterwards, we used “GSEA” from “clusterProfiler” package, to find hallmarks pathways for common DEG. The enrichment analysis indicated that common DEGs were mainly gathered in cell cycle-related signal pathways. A very meaningful outcome in our analysis was top ten hub genes (PLK1, RRM2, FOXM1, MKI67, RAD54L, BUB1B, RAD51, SPC25, SDC1, HMGA1) which were ranked according to their scores. 
+In the second analysis we ran survival analysis (TCGA) on the first COVID-19 dataset. Using clusters of significant gene groups
+we observed differences in the final survival plot. We’ll mention that instead of referring the mortality state, we treated patients under severe or ICU condition as dead (hence performing ICU risk analysis). Our findings provide potential molecular targets, signaling pathways and promising biomarkers that contribute to worse COVID-19 prognosis in patients with HIV. All of the above might aid to precise diagnosis and treatment for HIV-infected COVID-19 patients, as we aspire. (296 <3)
+
+
+### Differential gene expression analysis with with DESeq2 For The covid datasets
+
+- Set Working directory and packages (We set here just some of the packages 
+as we encountered dependencies problems which affected the plots we created)
+```{r}
+setwd('C:/Users/Ofer/OneDrive - Technion/Documents/236523/final')
+library(GEOquery, quietly = T)
+library(tidyverse, quietly = T)
+library(DESeq2, quietly = T)
+```
+
+## We'll begin with the first dataset accession number - GSE152418 (dataset 1)
+
+----
+* We are basing our project on an article we found:
+https://www.frontiersin.org/articles/10.3389/fimmu.2022.1008653/full
+
+The first out of the two COVID-19 datasets used in the article appeared to be 
+the same as we used in Tutorial 4. Hence, we also use it as a "reference" point 
+for the DESeq analysis of the second dataset, which is constructed a bit 
+different. We want to replicate the article results, where the DEG analysis of 
+the COVID-19 datasets were also done with this method/tool.
+----
+
+- Read data into R
+```{r}
+counts <- read_table("GSE152418_p20047_Study1_RawCounts.txt.gz")
+gse <- getGEO(filename="GSE152418_series_matrix.txt")
+```
+
+- Take a look at the gene counts data
+```{r}
+head(counts)
+```
+
+We can see it is the same format we used in the tutorial. 
+Cols == Samples, Rows == Gene ENSEMBLE coding.
+
+- Read the metadata
+```{r}
+metadata <- as_tibble(gse)
+head(metadata)
+```
+
+
+- Select relevant column in metadata
+```{r}
+metadata <- metadata %>% 
+  dplyr::select(sample = title, disease = disease.state.ch1, gender = gender.ch1, severity = severity.ch1)
+head(metadata)
+```
+
+- Remove "Convalescent" sample
+```{r}
+table(metadata$disease)
+
+metadata <- metadata %>% 
+  filter(disease != "Convalescent")
+
+table(metadata$disease)
+```
+
+- Make sure the counts matrix corresponds to the metadata
+```{r}
+counts <- cbind(ENSEMBLID = counts$ENSEMBLID, counts[,metadata$sample])
+all(metadata$sample == colnames(counts)[-1])
+```
+
+- Set disease state as a factor
+```{r}
+class(metadata$disease)
+metadata <- mutate(metadata, disease = as.factor(disease))
+class(metadata$disease)
+head(metadata$disease)
+```
+
+# Now we are ready for Differential Expression Analysis! 
+
+- Constructs a DESeq2 object
+```{r}
+dds <- DESeqDataSetFromMatrix(countData=counts, 
+                              colData=metadata,
+                              design= ~disease, 
+                              tidy=TRUE)  
+```
+
+- Next we run DESeq2 from start to end in a single command
+```{r}
+dds <- DESeq(dds)
+```
+
+---
+We'll next look at the gene-wise dispersion and the distribution of gene 
+expression, to show the similarity of the two datasets regarding the problems
+we saw in class.
+As the visual analysis is similar we justify the usage of the same solutions.
+i.e. using the negative binomial distribution. 
+---
+
+Estimate gene-wise dispersion
+- We need a reliable measure of variability for each gene between biological
+  replicates (batch effect).
+- Dispersion estimates and reflects the variance in gene expression for a given 
+  mean value.
+
+(PROBLEM RECAP)
+(a) With only a few replicates per group, the estimates of variation for 
+    each gene is often unreliable
+(b) For genes with low mean counts the variance have much larger spread
+
+```{r}
+dds <- estimateDispersions(dds)
+plotDispEsts(dds)
+```
+Negative Binomial distribution and Wald statistics
+
+(PROBLEM RECAP)
+(C) We don't get a uniform distribution, hence we can't use the t-test,
+and we should find alternative distribution and test.
+
+- The distribution of gene expression
+```{r}
+all_values <- pull(counts[,-1])
+all_values <- all_values[all_values<20]
+hist(all_values, breaks = 20)
+```
+
+- Solution: Negative binomial distribution, Wald test
+```{r}
+dds <- nbinomWaldTest(dds)
+```
+
+- Getting differential expression results: 
+```{r}
+res <- results(dds)
+mcols(res, use.names=T)
+```
+
+```{r}
+summary(res)
+```
+
+- distribution of p-values:
+```{r}
+hist(res$pvalue[res$baseMean > 1], breaks = 0:20/20,
+     col = "grey50", border = "white")
+```
+```{r}
+plotMA(res)
+```
+
+- For shrinking log fold-change we need to know the 'name' of the analysis we 
+  want to shrink its results.
+```{r}
+resultsNames(dds)
+```
+
+```{r}
+resLFC <- lfcShrink(dds, coef="disease_Healthy_vs_COVID.19", type="apeglm")
+plotMA(resLFC)
+```
+Adding gene symbols to the results
+```{r}
+library("org.Hs.eg.db")
+
+# Map gene symbols to the ENSEMBL gene IDs from our data
+resLFC$symbol <- mapIds(org.Hs.eg.db,
+                        keys=rownames(resLFC),
+                        column="SYMBOL",
+                        keytype="ENSEMBL",
+                        multiVals="first")
+```
+
+- Order the results by pvalue:
+```{r}
+resOrdered <- resLFC[order(resLFC$pvalue),]
+resOrdered
+```
+## Visualization of gene expression - Example for a specific significant gene
+
+We'll use the PLK1 gene as our example
+```{r}
+i <- which(resOrdered$symbol=='PLK1')
+resOrdered[i,]
+```
+
+extract the normalized values of the gene of PLK1:
+```{r}
+d <- plotCounts(dds, gene=rownames(resOrdered)[i], intgroup="disease", returnData=TRUE)
+d
+```
+
+- Plotting a box plot with ggplot2
+```{r}
+ggplot(d, aes(disease, count)) + geom_boxplot(aes(fill=disease)) + ggtitle("PLK1")
+```
+- Adding the samples to the plot
+```{r}
+library(viridis) # color palettes
+
+ggplot(d, aes(x=disease, y=count,fill=disease)) +
+  geom_boxplot() +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=2, alpha=0.9) +
+  theme_classic() +
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=11)
+  ) +
+  ggtitle("PLK1") +
+  xlab("Treatment") + ylab("Normalized counts")
+```
+
+## Visualization of gene expression for multiple genes
+
+```{r}
+library(EnhancedVolcano)
+
+EnhancedVolcano(resOrdered,
+                lab = resOrdered$symbol,
+                x = 'log2FoldChange',
+                y = 'padj',
+                labSize=3,
+                FCcutoff=2 )
+```
+
+- visualize multiple genes with a heatmap:
+```{r}
+library(pheatmap)
+
+dds.symbol = dds
+rownames(dds.symbol) = mapIds(org.Hs.eg.db,
+                              keys=rownames(dds),
+                              column="SYMBOL",
+                              keytype="ENSEMBL",
+                              multiVals="first")
+rownames(dds.symbol)[is.na(rownames(dds.symbol))] = rownames(dds)[is.na(rownames(dds.symbol))]
+rownames(dds.symbol) = make.unique(rownames(dds.symbol))
+selectUp <- resOrdered$symbol[resOrdered$log2FoldChange>0][1:10]
+selectDown <- resOrdered$symbol[resOrdered$log2FoldChange<0][1:10]
+select = c(selectUp,selectDown)
+df <- data.frame(row.names = colnames(dds.symbol),
+                 disease = colData(dds.symbol)$disease,
+                 severity = colData(dds.symbol)$severity,
+                 gender = colData(dds.symbol)$gender)
+### get normalized counts (also try rlog, and counts with normalized=T)
+normcounts = assay(vst(dds.symbol,blind=T))
+pheatmap(normcounts[select,], cluster_rows=TRUE,
+         show_colnames = FALSE,cluster_cols=TRUE, 
+         annotation_col=df, scale = 'row',cutree_cols = 2,cutree_rows = 2)
+```
+We can notice a nice "clustering" for each "disease" option, in relation to 
+different counts of gene groups.
+
+## Next We'll perform almost the same analysis on the second dataset 
+## accession number - GSE171110 (dataset 2)
+
+```{r}
+setwd('C:/Users/Ofer/OneDrive - Technion/Documents/236523/final')
+counts2 <- read_table("GSE171110_Data_RNAseq_raw_counts_geo.txt.gz")
+gse2 <- getGEO(filename="GSE171110_series_matrix.txt")
+```
+Let's take a look at the second counts table
+```{r}
+head(counts2)
+```
+We can see it differs a bit from the first dataset (averaged counts, and 
+including not just gene symbols nor ensemble ids but numbers of gene transcripts
+such as AC003072.1)
+
+- So, let's pre-process it.
+```{r}
+library(data.table)
+
+# Remove first two irrelevant rows (Sample_ID, Code_Patient)
+counts2 <- counts2[3:nrow(counts2), ]
+
+# Keep only SYMBOLS to fit the first dataset
+counts2 <- counts2[counts2$Sample_sheet %in% keys(org.Hs.eg.db, keytype="SYMBOL"), ]
+
+# Round all counts elements (which are currently of 'chr' type)
+for (i in seq_along(counts2[, 2:ncol(counts2)])) {
+  for (j in seq_along(counts2[ , 2:ncol(counts2)][[i]])) {
+    counts2[ , 2:ncol(counts2)][[i]][[j]] <- gsub("\\..*$", "", counts2[ , 2:ncol(counts2)][[i]][[j]])
+  }
+}
+```
+
+
+- Look at the pre-proccessed counts matrix for the second data set:
+```{r}
+head(counts2)
+```
+
+- Load the metadata of the second set
+```{r}
+metadata2 <- as_tibble(gse2)
+head(metadata2)
+```
+- We can notice un-wanted suffix for the samples. Let's remove it to fit the 
+  cols of counts2.
+```{r}
+metadata2$title <- gsub(" Healthy\\b(.{0,8})$", "", metadata2$title)
+metadata2$title <- gsub(" Severe Covid-19\\b(.{0,16})$", "", metadata2$title)
+head(metadata2)
+```
+
+
+- Select relevant column in metadata
+  * This time we don't have 'gender' nor 'severity' (all the patients with 
+  COVID-19 have severe condition). This is not critical as we're not planning 
+  to use the ''gender' in the design anyway.
+```{r}
+metadata2 <- metadata2 %>% 
+  dplyr::select(sample = title, disease = status.ch1)
+head(metadata2)
+```
+
+- Check distribution of samples (Healthy vs severe COVID-19)
+```{r}
+table(metadata2$disease)
+```
+- Make sure the counts matrix corresponds to the metadata
+```{r}
+metadata2$sample == colnames(counts2)[-1]
+```
+
+- Set disease state as a factor
+```{r}
+class(metadata2$disease)
+metadata2 <- mutate(metadata2, disease = as.factor(disease))
+class(metadata2$disease)
+head(metadata2$disease)
+```
+
+Prepare counts2 for DESeq2
+```{r}
+# Make all counts cols numeric for the DESeq2
+counts2[2:ncol(counts2)] <- apply(counts2[2:ncol(counts2)], 2, as.numeric)
+
+sample_sheet <- counts2$Sample_sheet
+# Make all row names informative (analogical to the ENSEMBLEID)
+rownames(counts2) <- sample_sheet
+head(counts2)
+```
+- Make sure the counts matrix corresponds to the metadata
+```{r}
+counts2 <- cbind(Sample_sheet = counts2$Sample_sheet, counts2[,metadata2$sample])
+metadata2$sample == colnames(counts2)[-1]
+```
+
+- Constructs a DESeq2 object
+```{r}
+dds2 <- DESeqDataSetFromMatrix(countData=counts2, 
+                               colData=metadata2, 
+                               design= ~disease,
+                               tidy=TRUE)  
+```
+
+- Next we run DESeq2 from start to end in a single command
+```{r}
+dds2 <- DESeq(dds2)
+```
+
+Next we'll look again at the gene-wise dispersion and the distribution of 
+gene expression.
+```{r}
+dds2 <- estimateDispersions(dds2)
+plotDispEsts(dds2)
+```
+
+- The distribution of gene expression
+```{r}
+all_values2 <- pull(counts2[,-1])
+all_values2 <- all_values2[all_values2<20]
+hist(all_values2, breaks = 20)
+```
+
+We can see that we get really similar plots to what we have gotten for the first 
+dataset. Hence, we'll use the same solution.
+
+- Solution: Negative binomial distribution, Wald test
+```{r}
+dds2 <- nbinomWaldTest(dds2)
+```
+
+- Getting differential expression results: 
+```{r}
+res2 <- results(dds2)
+# View(as.data.frame(res2))
+mcols(res2, use.names=T)
+```
+```{r}
+summary(res2)
+```
+distribution of p-values:
+```{r}
+hist(res2$pvalue[res2$baseMean > 1], breaks = 0:20/20,
+     col = "grey50", border = "white")
+```
+```{r}
+plotMA(res2)
+```
+- For shrinking log fold-change we need to know the 'name' of the analysis we want to shrink its results.
+```{r}
+resultsNames(dds2)
+```
+
+```{r}
+resLFC2 <- lfcShrink(dds2, coef="disease_Severe.Covid.19_vs_Healthy", type="apeglm")
+plotMA(resLFC2)
+```
+
+- Adding gene symbols to the results
+```{r}
+resLFC2$symbol <- rownames(resLFC2)
+```
+
+
+- Order the results by pvalue:
+```{r}
+resOrdered2 <- resLFC2[order(resLFC2$pvalue),]
+resOrdered2
+```
+
+## Visualization of gene expression - Example for a specific significant gene
+
+We'll use the BRCA1 gene as our example for this dataset
+```{r}
+i <- which(resOrdered2$symbol=='BRCA1')
+resOrdered2[i,]
+```
+We'll extract the normalized values of the gene of BRCA1:
+```{r}
+d2 <- plotCounts(dds2, gene=rownames(resOrdered2)[i], intgroup="disease", returnData=TRUE)
+d2
+```
+We can see a big difference between the counts of the healthy and the ones of
+the disease.
+
+- Plotting a box plot with ggplot2 (for visual difference)
+```{r}
+ggplot(d2, aes(disease, count)) + geom_boxplot(aes(fill=disease)) + ggtitle("BRCA1")
+```
+
+```{r}
+ggplot(d2, aes(x=disease, y=count,fill=disease)) +
+  geom_boxplot() +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=2, alpha=0.9) +
+  theme_classic() +
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=11)
+  ) +
+  ggtitle("BRCA1") +
+  xlab("Treatment") + ylab("Normalized counts")
+```
+
+## Visualization of gene expression for multiple genes
+```{r}
+EnhancedVolcano(resOrdered2,
+                lab = resOrdered2$symbol,
+                x = 'log2FoldChange',
+                y = 'padj',
+                labSize=3,
+                FCcutoff=2 )
+```
+
+visualize multiple genes with a heatmap:
+```{r}
+dds2.symbol = dds2
+rownames(dds2.symbol)[is.na(rownames(dds2.symbol))] = rownames(dds2)[is.na(rownames(dds2.symbol))]
+rownames(dds2.symbol) = make.unique(rownames(dds2.symbol))
+selectUp <- resOrdered2$symbol[resOrdered2$log2FoldChange>0][1:10]
+selectDown <- resOrdered2$symbol[resOrdered2$log2FoldChange<0][1:10]
+select = c(selectUp,selectDown)
+df2 <- data.frame(row.names = colnames(dds2.symbol),
+                 disease = colData(dds2.symbol)$disease)
+                 
+### get normalized counts (also try rlog, and counts with normalized=T)
+normcounts = assay(vst(dds2.symbol,blind=T))
+pheatmap(normcounts[select,], cluster_rows=TRUE,
+         show_colnames = FALSE,cluster_cols=TRUE, 
+         annotation_col=df2, scale = 'row',cutree_cols = 2,cutree_rows = 2)
+```
+
+### Intersect the significant genes from both datasets to retrieve more
+### reliable DEGs
+```{r}
+## Filter non-significant genes from first set
+filter.sgn.genes.1 <- resOrdered
+filter.sgn.genes.1.nona <- filter.sgn.genes.1[!is.na(filter.sgn.genes.1$padj),]
+filter.sgn.genes.1.nona <- filter.sgn.genes.1.nona[filter.sgn.genes.1.nona$padj < 0.05, ]
+
+## Filter non-significant genes from second set
+filter.sgn.genes.2 <- resOrdered2
+filter.sgn.genes.2.nona <- filter.sgn.genes.2[!is.na(filter.sgn.genes.2$padj),]
+filter.sgn.genes.2.nona <- filter.sgn.genes.2.nona[filter.sgn.genes.2.nona$padj < 0.05, ]
+
+# Intersect
+filter.intersect.covid <- filter.sgn.genes.1.nona[filter.sgn.genes.1.nona$symbol %in% filter.sgn.genes.2.nona$symbol,]
+filter.intersect.covid
+```
+
+- Performing PCA on first COVID-19 dataset:
+```{r}
+dds.symbol <- dds
+normcounts = assay(vst(dds.symbol, blind=T))
+var_per_gene <- apply(normcounts, 1, var)  # Calculate the variance per gene
+selectedGenes <- names(var_per_gene[order(var_per_gene, decreasing = T)][1:1000]) # Take the top 1000 variable genes
+normcounts.top1Kvar <- t(normcounts[selectedGenes,])
+pcaResults = prcomp(normcounts.top1Kvar)
+qplot(pcaResults$x[,1], pcaResults$x[,2], col=dds$disease, size=4) + labs(x="PC-1", y="PC-2")
+```
+
+- Now performing PCA on second COVID-19 dataset:
+```{r}
+dds2.symbol <- dds2
+normcounts2 = assay(vst(dds2.symbol, blind=T))
+var_per_gene2 <- apply(normcounts2, 1, var)  # Calculate the variance per gene
+selectedGenes2 <- names(var_per_gene2[order(var_per_gene2, decreasing = T)][1:1000]) # Take the top 1000 variable genes
+normcounts2.top1Kvar <- t(normcounts2[selectedGenes2,])
+pcaResults2 = prcomp(normcounts2.top1Kvar)
+qplot(pcaResults2$x[,1], pcaResults2$x[,2], col=dds2$disease, size=4) + labs(x="PC-1", y="PC-2")
+```
+
+We can notice the nice separation we get for both datasets regarding the 
+disease factor.
+
+### Limma analysis on HIV dataset - accession number GSE37250
+```{r}
+library("AnnotationDbi")
+library(hrbrthemes) # ggplot2 themes
+library(ReportingTools)
+library(edgeR)
+library(dplyr)
+```
+
+As our goal was to reproduce the experiment we mentioned at the beginning of 
+this notebook, we analyzed teh HIV datasets using the same tool they used in the 
+article.
+This tool is the "Limma" package.
+
+Taken from the "BioConductor" guide:
+"Limma is a package for the analysis of gene expression data arising from 
+microarray or RNA-seq technologies [32]. A core capability is the use of linear 
+models to assess differential expression in the context of multi-factor designed 
+experiments. Limma provides the ability to analyze comparisons between many RNA 
+targets simultaneously. It has features that make the analyses stable even for
+experiments with small number of arrays—this is achieved by borrowing 
+information across genes."
+
+
+- Loading the HIV counts data
+```{r}
+HIVcounts_init <- read.delim("GSE37250_non-normalized.txt.gz", row.names = 1)
+head(HIVcounts_init)
+```
+We notice that some rows represent the same genes. This is due the fact we
+have different different probes (ids).
+The probe ID represents a unique oligonucleotide sequence that is used to 
+hybridize to specific mRNA transcripts in the sample. 
+e.g., the probe "ILMN_1705025" corresponds to a specific probe on the 
+microarray chip, and it's associated with a transcript
+  
+- Hence, we aggregate the genes by calculating the means over the corresponding 
+  rows for each sample (we could've also use the median). 
+```{r}
+HIVcounts_init_agg <- HIVcounts_init %>%
+  dplyr::select(-c(1:1)) %>%
+  group_by(HIVcounts_init$SYMBOL) %>%
+  summarise_all(mean)
+
+head(HIVcounts_init_agg)
+```
+
+- Fix back the symbol name col after the agg. (too long to run the chunk above
+  so we patch it up)
+```{r}
+colnames(HIVcounts_init_agg)[colnames(HIVcounts_init_agg) == "HIVcounts_init$SYMBOL"] <- "SYMBOL"
+```
+
+- Rounding all the values to have solely integers.
+```{r}
+avg_signal_cols <- grep("AVG_Signal$", colnames(HIVcounts_init_agg))
+HIVcounts <- cbind(SYMBOL = HIVcounts_init_agg$SYMBOL, HIVcounts_init_agg[, avg_signal_cols])
+numeric_cols <- sapply(HIVcounts, is.numeric)
+HIVcounts[numeric_cols] <- apply(HIVcounts[numeric_cols], 2, function(x) round(x))
+
+current_names <- colnames(HIVcounts)
+new_names <- sub(".AVG_Signal$", "", current_names)
+colnames(HIVcounts) <- new_names
+
+
+head(HIVcounts)
+```
+
+```{r}
+# Load the GSE series matrix file
+gseHIV <- getGEO("GSE37250")
+
+# Extract the metadata from the GSE object
+metadataHIV <- pData(gseHIV[[1]])
+
+head(metadataHIV)
+```
+
+- Create DGEList object
+```{r}
+d0 <- DGEList(HIVcounts[-1])
+```
+
+- Calculate normalization factors
+```{r}
+d0 <- calcNormFactors(d0)
+head(d0)
+```
+
+- Now we'll filter out genes that has a count lower than cutoff = 1
+```{r}
+cutoff <- 1
+drop <- which(apply(cpm(d0), 1, max) < cutoff)
+d <- d0
+
+if (length(drop) != 0) {
+  d <- d0[-drop,] 
+  
+}
+
+dim(d) # number of genes left
+```
+
+- Removing prefix from samples to fit metadata as seen in ncbi
+```{r}
+colnames(HIVcounts) <- substr(colnames(HIVcounts), 2, nchar(colnames(HIVcounts)))
+```
+
+- Small fix to some bug we had in the cols naming (takes a lot of time 
+  to run the chunk above, so we're not taking chances by re-running it - 
+  so we patch it up)
+```{r}
+colnames(HIVcounts)[colnames(HIVcounts) == "YMBOL"] <- "SYMBOL"
+rownames(HIVcounts) <- HIVcounts$SYMBOL
+head(HIVcounts)
+```
+
+- Set disease state as a factor
+```{r}
+# Erase HIV prefix
+metadataHIV$`hiv status:ch1` <- sub("HIV ", "", metadataHIV$`hiv status:ch1`)
+
+# setting as factor
+class(metadataHIV$`hiv status:ch1`)
+metadataHIV <- mutate(metadataHIV, `hiv status:ch1` = as.factor(`hiv status:ch1`))
+class(metadataHIV$`hiv status:ch1`)
+head(metadataHIV$`hiv status:ch1`)
+
+```
+
+- Setting 'group' similarly as was done with 'design' in DESeq2
+```{r}
+cultivar <- metadataHIV$`hiv status:ch1`
+group <- interaction(cultivar)
+```
+
+- Specifying the model to be fitted. 
+  We do this before using voom since voom uses variances of the model residuals 
+  (observed - fitted)
+```{r}
+mm <- model.matrix(~0 + group)
+```
+
+- The above specifies a model where each coefficient corresponds to a group mean 
+  Voom
+```{r}
+y <- voom(d, mm, plot = T)
+```
+
+- What is voom doing?
+
+Counts are transformed to log2 counts per million reads (CPM), where “per million reads” is defined based on the normalization factors we calculated earlier
+A linear model is fitted to the log2 CPM for each gene, and the residuals are calculated
+A smoothed curve is fitted to the sqrt(residual standard deviation) by average expression (see red line in plot above)
+The smoothed curve is used to obtain weights for each gene and sample that are passed into limma along with the log2 CPMs.
+More details at https://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-2-r29
+
+The above is a “good” voom plot. If your voom plot looks like the below, you might want to filter more:
+```{r}
+tmp <- voom(d0, mm, plot = T)
+```
+
+- lmFit fits a linear model using weighted least squares for each gene:
+```{r}
+fit <- lmFit(y, mm)
+# naming the coefs with the fitting symbols
+rownames(fit@.Data[[1]]) <- HIVcounts$SYMBOL
+head(coef(fit))
+```
+
+- Comparisons between groups (log fold-changes) are obtained as contrasts of 
+  these fitted linear models:
+```{r}
+contr <- makeContrasts(groupnegative - grouppositive, levels = colnames(coef(fit)))
+head(contr)
+```
+
+- Estimate contrast for each gene
+```{r}
+tmp <- contrasts.fit(fit, contr)
+```
+
+- Empirical Bayes smoothing of standard errors (shrinks standard errors that are much larger or smaller than those from other genes towards the average standard error) (see https://www.degruyter.com/doi/10.2202/1544-6115.1027)
+```{r}
+tmp <- eBayes(tmp)
+```
+
+- What genes are most differentially expressed?
+```{r}
+top.table <- topTable(tmp, sort.by = "P", n = Inf)
+head(top.table, 20)
+```
+
+
+
+- How many DE genes are there?
+```{r}
+length(which(top.table$adj.P.Val < 0.05))
+```
+
+- Filtering non-significant genes
+```{r}
+## Filter non-significant genes from first set
+filter.sgn.genes.hiv <- as_tibble(top.table)
+filter.sgn.genes.hiv$symbol <- rownames(top.table)
+filter.sgn.genes.hiv <- filter(filter.sgn.genes.hiv, adj.P.Val < 0.05)
+head(filter.sgn.genes.hiv)
+```
+
+### INTERSECT COMMON DEGs from COVID-19 datasets and HIV
+
+```{r}
+filter.intersect.covid.hiv <- filter.intersect.covid[filter.intersect.covid$symbol %in% filter.sgn.genes.hiv$symbol,]
+rownames(filter.intersect.covid.hiv) <- filter.intersect.covid.hiv$symbol
+
+attributes(filter.intersect.covid.hiv)$row.names <- NULL
+row.names(filter.intersect.covid.hiv) <- filter.intersect.covid.hiv$symbol
+
+head(filter.intersect.covid.hiv)
+```
+
+- Visualizing Venn diagram for common DEGs 
+```{r}
+# Install and load the venn package
+library(venn)
+
+# Create a Venn diagram with filled circles
+venn(list(HIV = filter.sgn.genes.hiv$symbol, COVID19 = filter.intersect.covid$symbol), main = "COVID-19 and HIV DEG intersection",
+     col = c("black", "red", "black"), fill = c("blue", "pink", "green"))
+```
+
+### GSEA
+We'll use functional enrichment analysis with the Hallmark pathways gene sets.
+
+- First we need to create an ordered vector by the log fold change with the gene 
+  symbols as names:
+```{r}
+sorted_row_names <- row.names(filter.intersect.covid.hiv)[order(-filter.intersect.covid.hiv$log2FoldChange)]
+filter.intersect.covid.hiv_sorted <- filter.intersect.covid.hiv[sorted_row_names, ]
+
+# Create a named vector of genes_ordered with new row names
+genes_ordered <- setNames(filter.intersect.covid.hiv_sorted$log2FoldChange, row.names(filter.intersect.covid.hiv_sorted))
+
+```
+
+- For the hallmarks pathways gene sets we'll use msigdbr package.
+```{r}
+library(msigdbr)
+hallmarks <- msigdbr(species = "Homo sapiens", category = "H") %>% 
+  dplyr::select(gs_name, gene_symbol)
+```
+
+- Using GSEA() as done in class
+```{r}
+library(clusterProfiler)
+hm <- GSEA(genes_ordered, TERM2GENE = hallmarks)
+```
+
+- Visualizing the results
+```{r}
+hallmarks <- msigdbr(species = "Homo sapiens", category = "H")
+hallmarks <- hallmarks[,c('gs_name', 'gene_symbol')]
+dotplot(hm)
+```
+
+Unlike HW2, we got here just one Hallmark.
+As we interpret the GSEA results, we understand that we might have diverged
+from the experiment which was made in the article (due to several optional reasons
+such as different pre-processing decisions / aggregating methods / different 
+computation of COMMON DEGs or computation of DEGs for COVID/HIV albeit using the 
+same tools)
+
+Nonetheless, the sole hallmark we received fits the findings of the article,
+as we got E2F Targets hallmark which plays a crucial role in the control of cell 
+cycle progression, DNA replication, and cell proliferation. 
+
+In addition, though this kind of result might indicate on a troublesome analysis
+it's not uncommon to get one hallmark for such a small number of genes (436).
+
+
+### Survival analysis with xCell
+# Preparing and running xCell
+
+Now we are focusing on the survival rates, while considering the differences 
+in the design in our groups of interest. 
+
+The xCell tool can help us distinct between the groups by composition and 
+properties of cell types, using the DEGs. This will lead to a more precise 
+result, and serve as additional evidence to our hypothesis.  
+
+```{r}
+library(survival)
+library(survminer)
+library(xCell)
+```
+
+
+- Load COVID-19 gene expression data - in a table (not csv file)
+```{r}
+counts_surv <- read_table("GSE152418_p20047_Study1_RawCounts.txt.gz")
+counts_surv$S145_nCOV001_C <- NULL # removing the convalescent patient from the dataframe
+head(counts_surv)
+```
+
+- We'll now process the data-frame to fit xCell's format - converting ENSEMBLID 
+  to SYMBOL in all genes and creating an appropriate header: 
+```{r}
+library(biomaRt)
+
+# connect to the Ensembl database using the biomaRt package
+ensembl <- useMart("ensembl")
+
+# define the dataset and attributes to retrieve
+attributes <- c("ensembl_gene_id", "external_gene_name")
+ensembl <- useDataset("hsapiens_gene_ensembl", ensembl)
+
+# get a list of all ENSEMBLIDs in your dataframe
+ensemblids <- unique(counts_surv$ENSEMBLID)
+
+# query the biomaRt database to get the gene symbols for each ENSEMBLID
+results <- getBM(attributes = attributes, 
+                 filters = "ensembl_gene_id", 
+                 values = ensemblids, 
+                 mart = ensembl)
+
+# merge the results back into your original dataframe
+counts_surv <- merge(counts_surv, results, by.x = "ENSEMBLID", by.y = "ensembl_gene_id", all.x = TRUE)
+counts_surv <- counts_surv[, c(ncol(counts_surv), 2:(ncol(counts_surv)-1))]
+colnames(counts_surv)[colnames(counts_surv) == "external_gene_name"] <- "SYMBOL"
+counts_surv <- subset(counts_surv, SYMBOL != "")
+
+# uniting rows that were mapped to same gene and summing their counts 
+counts_surv <- aggregate(. ~ SYMBOL, data = counts_surv, FUN = sum)
+
+write.csv(counts_surv, "counts_surv.csv", row.names = FALSE)
+
+head(counts_surv)
+```
+
+- Load COVID-19 gene expression data (csv format, as seen in class)
+```{r}
+counts_surv <- read.csv("counts_surv.csv", header=TRUE, row.names=1, as.is=TRUE)
+head(counts_surv)
+```
+
+
+- Run xCell
+```{r}
+counts.xCell <- xCellAnalysis(counts_surv)
+```
+
+
+- Plot the results with heatmap
+```{r}
+library(pheatmap)
+pheatmap(counts.xCell, show_colnames = F)
+```
+
+It's difficult to see clear clusters because some enrichment score are 
+extremely high
+
+- We'll perform similar operations on the data for better visualization as was 
+  seen in the tutorial: 
+```{r}
+counts.xCell.filtered <- counts.xCell[rowMeans(counts.xCell) > 0.01,]
+counts.xCell.filtered.scaled <- t(scale(t(counts.xCell.filtered)))
+counts.xCell.filtered.scaled[counts.xCell.filtered.scaled>1] <- 1
+counts.xCell.filtered.scaled[counts.xCell.filtered.scaled< -1] <- -1
+p <- pheatmap(counts.xCell.filtered.scaled, show_colnames = F)
+p
+```
+
+- Let's cut the column's dendrogram into four clusters
+```{r}
+myclusters <- cutree(p$tree_col, k=4)
+names(myclusters) == names(counts.xCell["ImmuneScore",])
+
+MEscore.df <- data.frame("score" = counts.xCell["ImmuneScore",],
+                         "cluster" = factor(myclusters),
+                         row.names = names(myclusters))
+
+ggplot(MEscore.df, aes(x=cluster, y=score, fill=cluster)) +
+  geom_boxplot() +
+  labs(x="", y="Immune Score")
+```
+```{r}
+# loading our data and selecting the relevant columns
+gse_surv <- getGEO(filename="GSE152418_series_matrix.txt")
+metadata_surv <- as_tibble(gse_surv)
+metadata_surv <- metadata_surv %>%
+  dplyr::select(sample = title, disease = disease.state.ch1, sex = gender.ch1, status = severity.ch1, time = characteristics_ch1)
+
+# converting severety, sex and time features from string to numeric (double)
+metadata_surv$sex <- gsub("M", "1", metadata_surv$sex)
+metadata_surv$sex <- as.numeric(gsub("F", "2", metadata_surv$sex))
+metadata_surv$time <- as.numeric(gsub("days_post_symptom_onset: ", "", metadata_surv$time))
+metadata_surv$time <- ifelse(is.na(metadata_surv$time), 42, metadata_surv$time)
+metadata_surv$status <- gsub("Healthy", "1", metadata_surv$status)
+metadata_surv$status <- gsub("Moderate", "1", metadata_surv$status)
+metadata_surv$status <- gsub("Severe", "2", metadata_surv$status)
+metadata_surv$status <- as.numeric(gsub("ICU", "2", metadata_surv$status))
+
+metadata_surv <- metadata_surv %>% 
+  filter(disease != "Convalescent")
+
+write.csv(metadata_surv, "metadata.csv", row.names = FALSE)
+
+```
+
+# Using xCell's results for survival analysis
+
+- Load COVID-19 survival metadata and plot KM curve
+```{r}
+# here we are importing the metadata in a csv format which is more convenient 
+# this is the metadata of the first COVID-19 dataset
+Data <- read.csv("metadata.csv", header=TRUE)
+ggsurvplot(
+  fit = survfit(Surv(time, status) ~ 1, data = Data), 
+  xlab = "Days", 
+  ylab = "Overall survival probability")
+```
+
+- Compare KM-curves of 2 (second and third) clusters
+```{r}
+Data$clusters <- MEscore.df$cluster
+
+Data.2.vs.3 <- Data[Data$cluster %in% c(2,3),]
+
+fit <- survfit(Surv(time, status) ~ clusters, data = Data.2.vs.3)
+ggsurvplot(fit, surv.median.line = "hv", xlim=c(0,40), risk.table = TRUE, xscale = "d_y", break.x.by = 5, conf.int = T)
+```
+
+- Run Log-rank test
+```{r}
+survdiff(Surv(time, status) ~ clusters, data = Data.2.vs.3)
+```
